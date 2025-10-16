@@ -24,7 +24,7 @@ jobs:
           target: "/tmp/deploy"
           overwrite: true
 
-      # Upload database dump (optional)
+      # Upload latest DB dump if it exists
       - name: Upload latest database dump
         if: hashFiles('db/latest_db.sql') != ''
         uses: appleboy/scp-action@v0.1.7
@@ -33,9 +33,9 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           source: "db/latest_db.sql"
-          target: "/root/latest_db.sql"
+          target: "~/latest_db.sql"
 
-      # Run deployment commands on EC2
+      # Run deployment on EC2
       - name: Deploy to Apache webroot
         uses: appleboy/ssh-action@v0.1.7
         with:
@@ -44,16 +44,26 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -e
+
             WEB_ROOT="/srv/www/wordpress"
+            HOME_DIR="$HOME"
+            BACKUP_DIR="$HOME_DIR/backups"
             DB_NAME="${{ secrets.DB_NAME }}"
             DB_USER="${{ secrets.DB_USER }}"
             DB_PASS="${{ secrets.DB_PASS }}"
 
-            echo "🔹 Backing up database..."
-            mkdir -p /root/backups
-            mysqldump -u $DB_USER -p$DB_PASS $DB_NAME > "/root/backups/db_backup_$(date +%F_%H-%M-%S).sql"
+            echo "🔹 Creating backup directory..."
+            mkdir -p $BACKUP_DIR
 
-            echo "🔹 Replacing existing WordPress files..."
+            echo "🔹 Backing up current database..."
+            BACKUP_FILE="$BACKUP_DIR/db_backup_$(date +%F_%H-%M-%S).sql"
+            mysqldump -u $DB_USER -p$DB_PASS $DB_NAME > "$BACKUP_FILE"
+            echo "✅ Backup saved as $BACKUP_FILE"
+
+            echo "🧹 Cleaning old backups (keeping latest 3)..."
+            ls -tp $BACKUP_DIR/db_backup_*.sql | tail -n +4 | xargs -r rm --
+
+            echo "🔹 Deploying new WordPress files..."
             sudo rm -rf ${WEB_ROOT:?}/*
             sudo mv /tmp/deploy/* $WEB_ROOT
             sudo chown -R www-data:www-data $WEB_ROOT
@@ -61,9 +71,9 @@ jobs:
             sudo find $WEB_ROOT -type f -exec chmod 644 {} \;
 
             echo "🔹 Importing latest database dump (if present)..."
-            if [ -f /root/latest_db.sql ]; then
-              mysql -u $DB_USER -p$DB_PASS $DB_NAME < /root/latest_db.sql
-              rm /root/latest_db.sql
+            if [ -f $HOME_DIR/latest_db.sql ]; then
+              mysql -u $DB_USER -p$DB_PASS $DB_NAME < $HOME_DIR/latest_db.sql
+              rm $HOME_DIR/latest_db.sql
               echo "✅ Database imported."
             else
               echo "ℹ️ No new database dump found. Skipping import."
