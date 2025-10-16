@@ -13,6 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Upload all WordPress files to EC2 (temporary folder)
       - name: Upload WordPress files to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -20,10 +21,11 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           source: "./"
-          target: "/srv/www/wordpress"
+          target: "/tmp/deploy"
           overwrite: true
 
-      - name: Upload latest database dump (if any)
+      # Upload database dump (optional)
+      - name: Upload latest database dump
         if: hashFiles('db/latest_db.sql') != ''
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -33,11 +35,41 @@ jobs:
           source: "db/latest_db.sql"
           target: "/root/latest_db.sql"
 
-      - name: Run deploy script on EC2
+      # Run deployment commands on EC2
+      - name: Deploy to Apache webroot
         uses: appleboy/ssh-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            bash /root/deploy.sh
+            set -e
+            WEB_ROOT="/srv/www/wordpress"
+            DB_NAME="${{ secrets.DB_NAME }}"
+            DB_USER="${{ secrets.DB_USER }}"
+            DB_PASS="${{ secrets.DB_PASS }}"
+
+            echo "🔹 Backing up database..."
+            mkdir -p /root/backups
+            mysqldump -u $DB_USER -p$DB_PASS $DB_NAME > "/root/backups/db_backup_$(date +%F_%H-%M-%S).sql"
+
+            echo "🔹 Replacing existing WordPress files..."
+            sudo rm -rf ${WEB_ROOT:?}/*
+            sudo mv /tmp/deploy/* $WEB_ROOT
+            sudo chown -R www-data:www-data $WEB_ROOT
+            sudo find $WEB_ROOT -type d -exec chmod 755 {} \;
+            sudo find $WEB_ROOT -type f -exec chmod 644 {} \;
+
+            echo "🔹 Importing latest database dump (if present)..."
+            if [ -f /root/latest_db.sql ]; then
+              mysql -u $DB_USER -p$DB_PASS $DB_NAME < /root/latest_db.sql
+              rm /root/latest_db.sql
+              echo "✅ Database imported."
+            else
+              echo "ℹ️ No new database dump found. Skipping import."
+            fi
+
+            echo "🔹 Restarting Apache..."
+            sudo systemctl restart apache2
+
+            echo "✅ Deployment complete!"
