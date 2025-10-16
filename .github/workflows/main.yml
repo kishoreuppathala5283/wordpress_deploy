@@ -1,48 +1,72 @@
-- name: Deploy to Apache webroot
-  uses: appleboy/ssh-action@v0.1.7
-  with:
-    host: ${{ secrets.EC2_HOST }}
-    username: ${{ secrets.EC2_USER }}
-    key: ${{ secrets.EC2_SSH_KEY }}
-    script: |
-      set -e
+name: Deploy WordPress to EC2
 
-      # === Configuration ===
-      WEB_ROOT="/srv/www/wordpress"
-      HOME_DIR="$HOME"
-      BACKUP_DIR="$HOME_DIR/backups"
-      DB_NAME="${{ secrets.DB_NAME }}"
-      DB_USER="${{ secrets.DB_USER }}"
-      DB_PASS="${{ secrets.DB_PASS }}"
+on:
+  push:
+    branches:
+      - main
 
-      echo "🔹 Creating backup directory..."
-      mkdir -p $BACKUP_DIR
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
 
-      echo "🔹 Backing up current database..."
-      BACKUP_FILE="$BACKUP_DIR/db_backup_$(date +%F_%H-%M-%S).sql"
-      mysqldump --single-transaction --skip-lock-tables --no-tablespaces -u $DB_USER -p$DB_PASS $DB_NAME > "$BACKUP_FILE"
-      echo "✅ Backup saved as $BACKUP_FILE"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      echo "🧹 Cleaning old backups (keeping latest 3)..."
-      ls -tp $BACKUP_DIR/db_backup_*.sql | tail -n +4 | xargs -r rm --
+      - name: Copy files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "."
+          target: "/tmp/deploy"
+          strip_components: 0
 
-      echo "🔹 Deploying new WordPress files..."
-      sudo rm -rf ${WEB_ROOT:?}/*
-      sudo mv /tmp/deploy/* $WEB_ROOT
-      sudo chown -R www-data:www-data $WEB_ROOT
-      sudo find $WEB_ROOT -type d -exec chmod 755 {} \;
-      sudo find $WEB_ROOT -type f -exec chmod 644 {} \;
+      - name: Deploy to Apache webroot
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
 
-      echo "🔹 Importing latest database dump (if present)..."
-      if [ -f $HOME_DIR/latest_db.sql ]; then
-        mysql -u $DB_USER -p$DB_PASS $DB_NAME < $HOME_DIR/latest_db.sql
-        rm $HOME_DIR/latest_db.sql
-        echo "✅ Database imported."
-      else
-        echo "ℹ️ No new database dump found. Skipping import."
-      fi
+            WEB_ROOT="/srv/www/wordpress"
+            HOME_DIR="$HOME"
+            BACKUP_DIR="$HOME_DIR/backups"
+            DB_NAME="${{ secrets.DB_NAME }}"
+            DB_USER="${{ secrets.DB_USER }}"
+            DB_PASS="${{ secrets.DB_PASS }}"
 
-      echo "🔹 Restarting Apache..."
-      sudo systemctl restart apache2
+            echo "🔹 Creating backup directory..."
+            mkdir -p $BACKUP_DIR
 
-      echo "✅ Deployment complete!"
+            echo "🔹 Backing up current database..."
+            BACKUP_FILE="$BACKUP_DIR/db_backup_$(date +%F_%H-%M-%S).sql"
+            mysqldump --single-transaction --skip-lock-tables --no-tablespaces -u $DB_USER -p$DB_PASS $DB_NAME > "$BACKUP_FILE"
+            echo "✅ Backup saved as $BACKUP_FILE"
+
+            echo "🧹 Cleaning old backups (keeping latest 3)..."
+            ls -tp $BACKUP_DIR/db_backup_*.sql | tail -n +4 | xargs -r rm --
+
+            echo "🔹 Deploying new WordPress files..."
+            sudo rm -rf ${WEB_ROOT:?}/*
+            sudo mv /tmp/deploy/* $WEB_ROOT
+            sudo chown -R www-data:www-data $WEB_ROOT
+            sudo find $WEB_ROOT -type d -exec chmod 755 {} \;
+            sudo find $WEB_ROOT -type f -exec chmod 644 {} \;
+
+            echo "🔹 Importing latest database dump (if present)..."
+            if [ -f $HOME_DIR/latest_db.sql ]; then
+              mysql -u $DB_USER -p$DB_PASS $DB_NAME < $HOME_DIR/latest_db.sql
+              rm $HOME_DIR/latest_db.sql
+              echo "✅ Database imported."
+            else
+              echo "ℹ️ No new database dump found. Skipping import."
+            fi
+
+            echo "🔹 Restarting Apache..."
+            sudo systemctl restart apache2
+            echo "✅ Deployment complete!"
